@@ -1,0 +1,6 @@
+mysqlclient
+rq
+python-youtube
+selenium
+urllib3
+webdriver-manager
