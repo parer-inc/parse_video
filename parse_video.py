@@ -1,10 +1,9 @@
 """This service allows to prase video info"""
 import os
-import time
 import json
 import re
 from rq import Worker, Queue, Connection
-from methods.connection import get_redis, await_job
+from methods.connection import get_redis
 from pyyoutube import Api
 import requests
 
@@ -18,8 +17,11 @@ request.headers = {'X-YouTube-Client-Name': '1',
 
 
 def get_basic_details(continuation, track_params, token):
+    """Returns response and needed data from first request"""
     req = request.post(
-        f'https://www.youtube.com/comment_service_ajax?action_get_comments=1&pbj=1&ctoken={continuation}&continuation={continuation}&itct={track_params}', data={'session_token': token}).text
+                        f"https://www.youtube.com/comment_service_ajax?action_get_comments=1&pbj=1&ctoken={continuation}&continuation={continuation}&itct={track_params}",
+                        data={"context": {"client": {"hl": "en", "gl": "US"}}, 'session_token': token}
+                        ).text
     a = json.loads(req)
     count = str(a['response']['continuationContents']['itemSectionContinuation']
                 ['header']['commentsHeaderRenderer']['countText']['runs'][0]['text'])
@@ -31,6 +33,7 @@ def get_basic_details(continuation, track_params, token):
 
 
 def get_continuation_data(url):
+    """Returns continuation data"""
     html = request.get(url).text
     a, b = re.search(
         r'"continuation":"(.*?)","clickTrackingParams":"(.*?)"', html).groups()
@@ -40,7 +43,54 @@ def get_continuation_data(url):
     return (a, b, token)
 
 
-def parse_video(id, coms=False):
+def parse_comments(id, chan_id):
+    """Parses all comments under video"""
+    url = YOUTUBE_URL + id
+    continuation, track_params, token = get_continuation_data(url)
+    initial_json, count, page_len, end_range = get_basic_details(
+        continuation, track_params, token)
+    continuation, track_params, token = '', '', ''
+
+    for k in range(end_range):
+        if k == 0:
+            json_data = initial_json
+        else:
+            json_data = request.post(
+                                    f"""https://www.youtube.com/comment_service_ajax?action_get_comment
+                                    s=1&pbj=1&ctoken={continuation}&continuation={continuation}&itct={track_params}""",
+                                    data={"context": {"client": {"hl": "en", "gl": "US"}}, 'session_token': token}
+                                    ).text
+        print(k)
+        json_data = json.loads(json_data)
+        comment_json = json_data['response']['continuationContents']['itemSectionContinuation']['contents']
+        token = json_data['xsrf_token']
+        continuation = json_data['response']['continuationContents'][
+            'itemSectionContinuation']['continuations'][0]["nextContinuationData"]['continuation']
+        track_params = json_data['response']['continuationContents']['itemSectionContinuation'][
+            'continuations'][0]["nextContinuationData"]["clickTrackingParams"]
+        for i in comment_json:
+            com_data = i['commentThreadRenderer']['comment']['commentRenderer']
+        #    print(com_data)
+            urnm = com_data['authorText']['simpleText']
+            usr_id = com_data['authorEndpoint']['commandMetadata']['webCommandMetadata']['url'].replace('/channel/', '')
+            txt = com_data['contentText']['runs'][-1]['text']
+            tm = com_data['publishedTimeText']['runs'][-1]['text']
+            com_id = com_data['commentId']
+            lks = 0
+            rpls = 0
+            vt_sts = None
+            try:
+                vt_sts = com_data['voteStatus']
+                lks = com_data['voteCount']['simpleText']
+                rpls = com_data['replyCount']
+            except Exception:
+                pass
+            q = Queue('write_comments', connection=r)
+            q.enqueue('write_comments.write_comments',
+            [com_id, id, chan_id, urnm, usr_id, txt, lks, rpls, vt_sts, tm])
+
+
+def parse_video(id, chan_id, coms=False):
     """Parses a video"""
     # GET VIEO DATA USING API
     channel_by_id = api.get_video_by_id(video_id=id)
@@ -50,50 +100,20 @@ def parse_video(id, coms=False):
     if data is None:
         # log
         return False
+    print("JOINER PRINTER", data['snippet']['tags'])
+
     data = [data['id'], data['snippet']['title'],
             data['statistics']['viewCount'], data['statistics']['likeCount'],
             data['statistics']['dislikeCount'], data['statistics']['commentCount'],
             data['snippet']['description'], data['snippet']['channelId'],
             data['contentDetails']['duration'], data['snippet']['publishedAt'],
-            ','.join(data['snippet']['tags']
-                     ), data['snippet']['defaultLanguage'],
+            ','.join(data['snippet']['tags']), data['snippet']['defaultLanguage'],
             data['status']['madeForKids']]
     if coms:
-        url = YOUTUBE_URL + id
-        continuation, track_params, token = get_continuation_data(url)
-        initial_json, count, page_len, end_range = get_basic_details(
-            continuation, track_params, token)
-        continuation, track_params, token = '', '', ''
 
-        comments = []
-        for k in range(1):  # end_range
-            if k == 0:
-                json_data = initial_json
-            else:
-                json_data = request.post(
-                    f"https://www.youtube.com/comment_service_ajax?action_get_comments=1&pbj=1&ctoken={continuation}&continuation={continuation}&itct={track_params}", data={'session_token': token}).text
-            json_data = json.loads(json_data)
-            comment_json = json_data['response']['continuationContents']['itemSectionContinuation']['contents']
-            token = json_data['xsrf_token']
-            continuation = json_data['response']['continuationContents'][
-                'itemSectionContinuation']['continuations'][0]["nextContinuationData"]['continuation']
-            track_params = json_data['response']['continuationContents']['itemSectionContinuation'][
-                'continuations'][0]["nextContinuationData"]["clickTrackingParams"]
-            for i in comment_json:
-                com_data = i['commentThreadRenderer']['comment']['commentRenderer']
-                urnm = com_data['authorText']['simpleText']
-                txt = com_data['contentText']['runs'][-1]['text']
-                tm = com_data['publishedTimeText']['runs'][-1]['text']
-                lks = 0
-                rpls = 0
-                try:
-                    lks = com_data['voteCount']['simpleText']
-                    rpls = com_data['replyCount']
-                except Exception:
-                    pass
-                # WRITE INTO COMMENTS
-                print(urnm, txt, tm, lks, rpls)
-        return True
+        parse_comments(id, chan_id)
+        return False
+    return data
 
 
 if __name__ == '__main__':
