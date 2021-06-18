@@ -36,7 +36,7 @@ def get_continuation_data(url):
     """Returns continuation data"""
     html = request.get(url).text
     a, b = re.search(
-        r'"continuation":"(.*?)","clickTrackingParams":"(.*?)"', html).groups()
+            r'"continuation":"(.*?)","clickTrackingParams":"(.*?)"', html).groups()
     b = b.replace('=', '%3D')
     token = re.search(r'"XSRF_TOKEN":"(.*?)"',
                       html).groups()[0].replace('\\u003d', '=')
@@ -46,9 +46,14 @@ def get_continuation_data(url):
 def parse_comments(id, chan_id):
     """Parses all comments under video"""
     url = YOUTUBE_URL + id
-    continuation, track_params, token = get_continuation_data(url)
-    initial_json, count, page_len, end_range = get_basic_details(
+    try:
+        continuation, track_params, token = get_continuation_data(url)
+
+        initial_json, count, page_len, end_range = get_basic_details(
         continuation, track_params, token)
+    except Exception as e: # cuz no comment
+        print(e, id)
+        return False
     continuation, track_params, token = '', '', ''
 
     for k in range(end_range):
@@ -56,21 +61,14 @@ def parse_comments(id, chan_id):
             json_data = initial_json
         else:
             json_data = request.post(
-                                    f"""https://www.youtube.com/comment_service_ajax?action_get_comment
-                                    s=1&pbj=1&ctoken={continuation}&continuation={continuation}&itct={track_params}""",
+                                    f"""https://www.youtube.com/comment_service_ajax?action_get_comments=1&pbj=1&ctoken={continuation}&continuation={continuation}&itct={track_params}""",
                                     data={"context": {"client": {"hl": "en", "gl": "US"}}, 'session_token': token}
                                     ).text
-        print(k)
         json_data = json.loads(json_data)
         comment_json = json_data['response']['continuationContents']['itemSectionContinuation']['contents']
         token = json_data['xsrf_token']
-        continuation = json_data['response']['continuationContents'][
-            'itemSectionContinuation']['continuations'][0]["nextContinuationData"]['continuation']
-        track_params = json_data['response']['continuationContents']['itemSectionContinuation'][
-            'continuations'][0]["nextContinuationData"]["clickTrackingParams"]
         for i in comment_json:
             com_data = i['commentThreadRenderer']['comment']['commentRenderer']
-        #    print(com_data)
             urnm = com_data['authorText']['simpleText']
             usr_id = com_data['authorEndpoint']['commandMetadata']['webCommandMetadata']['url'].replace('/channel/', '')
             txt = com_data['contentText']['runs'][-1]['text']
@@ -80,15 +78,22 @@ def parse_comments(id, chan_id):
             rpls = 0
             vt_sts = None
             try:
-                vt_sts = com_data['voteStatus']
                 lks = com_data['voteCount']['simpleText']
+                vt_sts = com_data['voteStatus']
                 rpls = com_data['replyCount']
             except Exception:
                 pass
-            q = Queue('write_comments', connection=r)
-            q.enqueue('write_comments.write_comments',
+            q = Queue('write_comment', connection=r)
+            q.enqueue('write_comment.write_comment',
             [com_id, id, chan_id, urnm, usr_id, txt, lks, rpls, vt_sts, tm])
-
+        try:
+            continuation = json_data['response']['continuationContents'][
+            'itemSectionContinuation']['continuations'][0]["nextContinuationData"]['continuation']
+            track_params = json_data['response']['continuationContents']['itemSectionContinuation'][
+                'continuations'][0]["nextContinuationData"]["clickTrackingParams"]
+        except Exception as e:
+            #print(e) # Log
+            break
 
 def parse_video(id, chan_id, coms=False):
     """Parses a video"""
@@ -100,19 +105,27 @@ def parse_video(id, chan_id, coms=False):
     if data is None:
         # log
         return False
-    print("JOINER PRINTER", data['snippet']['tags'])
 
+    tags = ""
+    try:
+        tags = ','.join(data['snippet']['tags'])
+    except Exception as e:
+        pass
+    #print(tags)
     data = [data['id'], data['snippet']['title'],
             data['statistics']['viewCount'], data['statistics']['likeCount'],
             data['statistics']['dislikeCount'], data['statistics']['commentCount'],
             data['snippet']['description'], data['snippet']['channelId'],
-            data['contentDetails']['duration'], data['snippet']['publishedAt'],
-            ','.join(data['snippet']['tags']), data['snippet']['defaultLanguage'],
+            data['contentDetails']['duration'].replace("PT",""), data['snippet']['publishedAt'],
+            tags, data['snippet']['defaultLanguage'],
             data['status']['madeForKids']]
-    if coms:
-
-        parse_comments(id, chan_id)
-        return False
+    if coms and data[5] not in (None, '0'):
+        #try:
+            parse_comments(id, chan_id)
+        #except Exception:
+            #print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", Exception)
+            # LOG
+        #    return False
     return data
 
 
