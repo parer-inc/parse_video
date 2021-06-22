@@ -111,7 +111,7 @@ def parse_video(id, chan_id, coms=False):
         tags = ','.join(data['snippet']['tags'])
     except Exception as e:
         pass
-    #print(tags)
+    # print(tags)
     data = [data['id'], data['snippet']['title'],
             data['statistics']['viewCount'], data['statistics']['likeCount'],
             data['statistics']['dislikeCount'], data['statistics']['commentCount'],
@@ -120,12 +120,12 @@ def parse_video(id, chan_id, coms=False):
             tags, data['snippet']['defaultLanguage'],
             data['status']['madeForKids']]
     if coms and data[5] not in (None, '0'):
-        #try:
+        try:
             parse_comments(id, chan_id)
-        #except Exception:
-            #print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", Exception)
+        except Exception:
+            # print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", Exception)
             # LOG
-        #    return False
+            return False
     return data
 
 
